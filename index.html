@@ -98,6 +98,7 @@ canvas{max-height:300px}
       <div class="row">
         <div><label for="pc">Contact name (what you call them)</label><input id="pc" list="contacts" placeholder="e.g. Sam"></div>
         <div><label for="pme">Your Discord display name (as shown in the chat)</label><input id="pme"></div>
+        <div><label for="pdate">Date, if the paste only shows times</label><input id="pdate" type="date"></div>
         <div><label for="pord">Date order in pasted text</label>
           <select id="pord"><option value="dmy">Day/Month (UK)</option><option value="mdy">Month/Day (US)</option></select></div>
       </div>
@@ -329,15 +330,20 @@ function parseDate(s, order) {
 }
 // Ignores case, leading bullets (* - •) and square brackets when matching names.
 const norm = n => n.toLowerCase().replace(/^[\s*\-•·]+/, '').replace(/[\[\]]/g, '').replace(/\s+/g, ' ').trim();
-function parseChat(text, me, order) {
+function parseChat(text, me, order, fallback) {
   // Discord's web copy puts name, dash and time on separate lines; join them into one header line.
   text = text.replace(/[ \t]*\r?\n[ \t]*([—–])[ \t]*\r?\n[ \t]*/g, ' $1 ')
              .replace(/[ \t]*\r?\n[ \t]*([—–])[ \t]+(?=today|yesterday|\d{1,4}[\/.\-]\d)/gi, ' $1 ');
-  const out = []; let cur = null;
+  const out = []; let cur = null, lastDate = fallback || new Date(), prevD = null;
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.replace(/\s+$/, '');
-    const h = line.match(/^(.+?)\s+[—–]\s+(.+)$/), hd = h && parseDate(h[2].trim(), order);
-    if (hd) { cur = { author: h[1].trim(), date: hd, text: '' }; out.push(cur); continue; }
+    const h = line.match(/^(.+?)\s+[—–]\s+(.+)$/);
+    let hd = h && parseDate(h[2].trim(), order);
+    if (!hd && h && /^\d{1,2}:\d{2}\s*(AM|PM)?$/i.test(h[2].trim())) { // time only: use the date from the box or the previous message
+      hd = setTime(new Date(lastDate), h[2]);
+      if (hd && prevD && hd < prevD) hd.setDate(hd.getDate() + 1); // time went backwards, so it's after midnight
+    }
+    if (hd) { lastDate = new Date(hd); prevD = hd; cur = { author: h[1].trim(), date: hd, text: '' }; out.push(cur); continue; }
     const c = line.match(/^\[(\d{1,2}:\d{2}\s*(?:AM|PM)?)\]\s?(.*)$/i);
     if (c && cur) { const d = setTime(new Date(cur.date), c[1]); if (d) { cur = { author: cur.author, date: d, text: c[2] }; out.push(cur); continue; } }
     if (cur && line) cur.text += (cur.text ? '\n' : '') + line;
@@ -346,12 +352,13 @@ function parseChat(text, me, order) {
 }
 const countW = t => t.trim().split(/\s+/).filter(Boolean).length;
 $('pme').value = localStorage.getItem('chatup_me') || '';
+{ const t = new Date(); $('pdate').value = t.getFullYear() + '-' + String(t.getMonth() + 1).padStart(2, '0') + '-' + String(t.getDate()).padStart(2, '0'); }
 
 $('pparse').onclick = () => {
   const me = $('pme').value.trim(); let c = $('pc').value.trim();
   if (!me) { $('pmsg').textContent = 'Enter your Discord display name first.'; return; }
   localStorage.setItem('chatup_me', me);
-  const msgs = parseChat($('ptxt').value, me, $('pord').value);
+  const msgs = parseChat($('ptxt').value, me, $('pord').value, (() => { const [y, m, d] = ($('pdate').value || '').split('-').map(Number); return y ? new Date(y, m - 1, d) : new Date(); })());
   if (!c) { // try to find the contact from the display name shown in the chat
     const hit = Object.values(profiles).find(p => p.display_name && msgs.some(m => m.sender === 'them' && norm(m.author) === norm(p.display_name)));
     if (hit) { c = hit.contact_name; $('pc').value = c; }
