@@ -85,10 +85,13 @@ canvas{max-height:300px}
       <div class="card"><h2>Median reply time per day (minutes)</h2><canvas id="c1"></canvas></div>
       <div class="card"><h2>Average words per turn</h2><canvas id="c2"></canvas></div>
     </div>
-    <div class="card"><h2>All contacts: you ÷ them</h2>
-      <p class="msg" style="margin-top:0">Reply time ratio below 1 means you answer faster. Words ratio above 1 means your replies are longer.</p>
-      <canvas id="c3"></canvas></div>
-    <div class="card"><h2>Conversation ratings over time</h2><canvas id="c4"></canvas></div>
+    <div class="grid">
+      <div class="card"><h2>Words per message, by contact</h2><canvas id="c3"></canvas></div>
+      <div class="card"><h2>Average time per reply, by contact (minutes)</h2><canvas id="c5"></canvas></div>
+    </div>
+    <div class="card"><h2>Conversation scores over time</h2>
+      <label for="sc">Person (only people with more than one conversation)</label><select id="sc"></select>
+      <div class="msg" id="scmsg"></div><canvas id="c4"></canvas></div>
     <div class="card wrap"><h2>Totals</h2><table id="tbl"></table></div>
   </div>
 
@@ -98,7 +101,7 @@ canvas{max-height:300px}
       <h2>Paste a chat</h2>
       <div class="row">
         <div><label for="pcs">Contact name (what you call them)</label><select id="pcs"></select><input id="pc" class="hide" placeholder="New contact name" style="margin-top:6px"></div>
-        <div><label for="prate">Conversation rating (0–10)</label><input id="prate" type="number" min="0" max="10" step="0.1" placeholder="e.g. 7.5"><div class="msg" id="pgrade" style="margin:4px 0 0;min-height:0"></div></div>
+        <div><label for="prate">Conversation score (0–10)</label><input id="prate" type="number" min="0" max="10" step="0.1" placeholder="e.g. 7.5"></div>
         <div><label for="pme">Your Discord display name (as shown in the chat)</label><input id="pme"></div>
         <div><label for="pdate">Date, if the paste only shows times</label><input id="pdate" type="date"></div>
         <div><label for="pord">Date order in pasted text</label>
@@ -227,7 +230,7 @@ async function refresh() {
   $('pcs').innerHTML = '<option value="">Choose contact…</option>' + allNames.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('') + '<option value="__new">New contact…</option>';
   if ([...$('pcs').options].some(o => o.value === sv)) $('pcs').value = sv;
   $('pc').classList.toggle('hide', $('pcs').value !== '__new');
-  buildGroups(); render(); renderRecent(); renderPeople(); renderConvos();
+  buildGroups(); render(); renderRecent(); renderPeople(); renderConvos(); renderScores();
 }
 
 /* ---------- stats ---------- */
@@ -249,7 +252,7 @@ function analyse(list, capH) {
   }
   const side = who => {
     const ms = list.filter(m => m.sender === who), ts = turns.filter(t => t.who === who);
-    return { n: ms.length, resp: median(gaps.filter(g => g.who === who).map(g => g.min)),
+    return { n: ms.length, resp: median(gaps.filter(g => g.who === who).map(g => g.min)), respAvg: mean(gaps.filter(g => g.who === who).map(g => g.min)),
       wMsg: mean(ms.map(m => m.word_count)), cMsg: mean(ms.map(m => m.char_count)),
       wTurn: mean(ts.map(t => t.words)), cTurn: mean(ts.map(t => t.chars)) };
   };
@@ -269,7 +272,7 @@ function render() {
   const g = $('fg').value, pass = c => { if (!g) return true; const p = profiles[c] || {}; return ((p[GF[g[0]][0]]) || '').toLowerCase() === g.slice(2).toLowerCase(); };
   const subset = sel ? by[sel] || [] : rows.filter(r => pass(r.contact));
   const s = analyse(subset, capH);
-  const rc = convos.filter(v => v.rating != null && (sel ? v.contact === sel : pass(v.contact)));
+  const rc = convos.filter(v => v.score != null && (sel ? v.contact === sel : pass(v.contact)));
   const me = css('--me'), them = css('--them'), mute = css('--mute'), line = css('--line');
   Chart.defaults.color = mute; Chart.defaults.borderColor = line; Chart.defaults.font.family = '"Bricolage Grotesque", system-ui, sans-serif';
 
@@ -279,7 +282,7 @@ function render() {
     ['Words per message', n1(s.me.wMsg), n1(s.them.wMsg)],
     ['Characters per message', n1(s.me.cMsg), n1(s.them.cMsg)],
     ['Messages', s.me.n, s.them.n]
-  ].map(k => `<div><span>${k[0]}</span><b><span class="me" style="font-size:inherit">${k[1]}</span> <span style="font-size:1rem;font-weight:400">vs</span> <span class="them" style="font-size:inherit">${k[2]}</span></b></div>`).join('') + `<div><span>Average rating</span><b>${rc.length ? n1(mean(rc.map(v => v.rating))) + ' <span style="font-size:1rem">' + grade(mean(rc.map(v => v.rating))) + '</span>' : '–'}</b></div>`;
+  ].map(k => `<div><span>${k[0]}</span><b><span class="me" style="font-size:inherit">${k[1]}</span> <span style="font-size:1rem;font-weight:400">vs</span> <span class="them" style="font-size:inherit">${k[2]}</span></b></div>`).join('') + `<div><span>Rating</span><b>${rc.length ? grade(mean(rc.map(v => v.score))) : '–'}</b></div>`;
   const [label, cls] = status(s);
   $('verdict').innerHTML = rows.length ? `<span class="tag ${cls}">${label}</span> <span class="me">You</span> vs <span class="them">them</span>` : 'No messages yet. Add some in the Add messages tab.';
 
@@ -298,20 +301,16 @@ function render() {
     options: { responsive: true, scales: { y: { beginAtZero: true } } } });
 
   const names = Object.keys(by).filter(pass).sort(), all = names.map(c => ({ c, s: analyse(by[c], capH) }));
-  const ratio = (a, b) => a != null && b ? Math.round(a / b * 100) / 100 : null;
-  chart('c3', { type: 'bar', data: { labels: names, datasets: [
-    { label: 'Reply time (you ÷ them)', data: all.map(x => ratio(x.s.me.resp, x.s.them.resp)), backgroundColor: me },
-    { label: 'Words per turn (you ÷ them)', data: all.map(x => ratio(x.s.me.wTurn, x.s.them.wTurn)), backgroundColor: them }] },
-    options: { responsive: true, scales: { y: { beginAtZero: true } } } });
-
-  const rs = [...rc].sort((a, b) => new Date(a.started_at) - new Date(b.started_at));
-  chart('c4', { type: 'line', data: { labels: rs.map(v => new Date(v.started_at).toLocaleDateString('en-CA') + (sel ? '' : ' ' + v.contact)),
-    datasets: [{ label: 'Rating', data: rs.map(v => v.rating), borderColor: me, backgroundColor: me, tension: .25 }] },
-    options: { responsive: true, scales: { y: { min: 0, max: 10 } } } });
+  const grouped = (id, f, title) => chart(id, { type: 'bar', data: { labels: names, datasets: [
+    { label: 'You', data: all.map(x => f(x.s.me)), backgroundColor: me },
+    { label: 'Them', data: all.map(x => f(x.s.them)), backgroundColor: them }] },
+    options: { responsive: true, scales: { y: { beginAtZero: true, title: { display: true, text: title } } } } });
+  grouped('c3', x => x.wMsg, 'Words per message');
+  grouped('c5', x => x.respAvg, 'Average minutes per reply');
   $('tbl').innerHTML = '<tr><th>Contact</th><th>Age</th><th>Gender</th><th>Messages</th><th>Median reply</th><th>Words / turn</th><th>Words / msg</th><th>Chars / msg</th><th>Rating</th><th>Status</th></tr>' +
     all.map(({ c, s }) => { const [l, k] = status(s);
       const pair = (a, b) => `<span class="me">${a}</span> / <span class="them">${b}</span>`;
-      const p = profiles[c] || {}, rv = mean(convos.filter(v => v.contact === c && v.rating != null).map(v => v.rating)); return `<tr><td>${esc(c)}</td><td>${p.age ?? '–'}</td><td>${esc(p.gender || '–')}</td><td>${pair(s.me.n, s.them.n)}</td><td>${pair(fmt(s.me.resp), fmt(s.them.resp))}</td><td>${pair(n1(s.me.wTurn), n1(s.them.wTurn))}</td><td>${pair(n1(s.me.wMsg), n1(s.them.wMsg))}</td><td>${pair(n1(s.me.cMsg), n1(s.them.cMsg))}</td><td>${rv == null ? '–' : n1(rv) + ' ' + grade(rv)}</td><td><span class="tag ${k}">${l}</span></td></tr>`; }).join('');
+      const p = profiles[c] || {}, rv = mean(convos.filter(v => v.contact === c && v.score != null).map(v => v.score)); return `<tr><td>${esc(c)}</td><td>${p.age ?? '–'}</td><td>${esc(p.gender || '–')}</td><td>${pair(s.me.n, s.them.n)}</td><td>${pair(fmt(s.me.resp), fmt(s.them.resp))}</td><td>${pair(n1(s.me.wTurn), n1(s.them.wTurn))}</td><td>${pair(n1(s.me.wMsg), n1(s.them.wMsg))}</td><td>${pair(n1(s.me.cMsg), n1(s.them.cMsg))}</td><td>${rv == null ? '–' : grade(rv)}</td><td><span class="tag ${k}">${l}</span></td></tr>`; }).join('');
 }
 $('fc').onchange = $('cap').onchange = $('fg').onchange = render;
 
@@ -381,33 +380,48 @@ async function insertRows(list) {
   }
 }
 $('pcs').onchange = () => $('pc').classList.toggle('hide', $('pcs').value !== '__new');
-$('prate').oninput = () => { const v = $('prate').value; $('pgrade').textContent = v === '' ? '' : 'Grade: ' + grade(Math.min(10, Math.max(0, +v))); };
 $('psave').onclick = async () => {
   $('psave').disabled = true; let cvId = null;
   try {
     const rt = $('prate').value, ts = parsed.map(p => new Date(p.sent_at).getTime());
     const { data: cv, error: ce } = await sb.from('chatup_conversations').insert({ contact: parsed[0].contact,
       started_at: new Date(Math.min(...ts)).toISOString(), ended_at: new Date(Math.max(...ts)).toISOString(), message_count: parsed.length,
-      rating: rt === '' ? null : Math.min(10, Math.max(0, +rt)) }).select('id').single();
+      score: rt === '' ? null : Math.min(10, Math.max(0, +rt)) }).select('id').single();
     if (ce) throw ce;
     cvId = cv.id;
     await insertRows(parsed.map(p => ({ ...p, conversation_id: cvId })));
-    $('pmsg').textContent = `Saved ${parsed.length} messages${rt === '' ? '' : ' with a rating of ' + (+rt) + ' (' + grade(+rt) + ')'}.`;
-    parsed = []; $('ptbl').innerHTML = ''; $('ptxt').value = ''; $('prate').value = ''; $('pgrade').textContent = ''; refresh();
+    $('pmsg').textContent = `Saved ${parsed.length} messages${rt === '' ? '' : ' with a score of ' + (+rt)}.`;
+    parsed = []; $('ptbl').innerHTML = ''; $('ptxt').value = ''; $('prate').value = ''; refresh();
   } catch (e) {
     if (cvId) await sb.from('chatup_conversations').delete().eq('id', cvId);
     $('pmsg').innerHTML = `<span class="err">${esc(e.message)}</span>`; $('psave').disabled = false;
   }
 };
 
+/* ---------- score chart (one person at a time) ---------- */
+function renderScores() {
+  const cnt = {}; convos.forEach(v => cnt[v.contact] = (cnt[v.contact] || 0) + 1);
+  const names = Object.keys(cnt).filter(c => cnt[c] > 1); // convos are newest first, so this is most recent first
+  const cur = $('sc').value;
+  $('sc').innerHTML = names.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('');
+  if (names.includes(cur)) $('sc').value = cur;
+  $('scmsg').textContent = names.length ? '' : 'Save two or more conversations for the same person to see their scores here.';
+  if (!names.length) { if (charts.c4) { charts.c4.destroy(); delete charts.c4; } return; }
+  const rs = convos.filter(v => v.contact === $('sc').value && v.score != null).sort((a, b) => new Date(a.started_at) - new Date(b.started_at));
+  chart('c4', { type: 'line', data: { labels: rs.map(v => new Date(v.started_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })),
+    datasets: [{ label: 'Score', data: rs.map(v => v.score), borderColor: css('--me'), backgroundColor: css('--me'), tension: .25 }] },
+    options: { responsive: true, scales: { y: { min: 0, max: 10, title: { display: true, text: 'Score' } } } } });
+}
+$('sc').onchange = renderScores;
+
 /* ---------- conversations ---------- */
 function renderConvos() {
-  const body = convos.map(v => `<tr><td>${new Date(v.started_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}</td><td>${esc(v.contact)}</td><td>${v.message_count}</td><td><input type="number" min="0" max="10" step="0.1" value="${v.rating ?? ''}" data-rate="${v.id}" style="width:90px"></td><td>${grade(v.rating)}</td><td><button class="btn alt" style="margin:0;padding:3px 10px" data-cdel="${v.id}">Delete</button></td></tr>`).join('');
-  $('convos').innerHTML = '<tr><th>Started</th><th>Contact</th><th>Messages</th><th>Rating (0–10)</th><th>Grade</th><th></th></tr>' + (body || '<tr><td colspan="6">No conversations yet. Save a pasted chat to add one.</td></tr>');
+  const body = convos.map(v => `<tr><td>${new Date(v.started_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}</td><td>${esc(v.contact)}</td><td>${v.message_count}</td><td><input type="number" min="0" max="10" step="0.1" value="${v.score ?? ''}" data-rate="${v.id}" style="width:90px"></td><td><button class="btn alt" style="margin:0;padding:3px 10px" data-cdel="${v.id}">Delete</button></td></tr>`).join('');
+  $('convos').innerHTML = '<tr><th>Started</th><th>Contact</th><th>Messages</th><th>Score (0–10)</th><th></th></tr>' + (body || '<tr><td colspan="5">No conversations yet. Save a pasted chat to add one.</td></tr>');
 }
 $('convos').onchange = async e => {
   const id = e.target.dataset.rate; if (!id) return; const v = e.target.value;
-  const { error } = await sb.from('chatup_conversations').update({ rating: v === '' ? null : Math.min(10, Math.max(0, +v)) }).eq('id', id);
+  const { error } = await sb.from('chatup_conversations').update({ score: v === '' ? null : Math.min(10, Math.max(0, +v)) }).eq('id', id);
   if (error) $('dmsg').textContent = error.message; else refresh();
 };
 $('convos').onclick = async e => {
@@ -464,8 +478,8 @@ $('pf_add').onclick = () => addRow();
 function renderPeople() {
   const names = [...new Set([...rows.map(r => r.contact), ...Object.keys(profiles)])].sort();
   $('people').innerHTML = '<tr><th>Contact name</th><th>Display name</th><th>Username</th><th>Age</th><th>Gender</th><th>Pronouns</th><th>Sexuality</th><th>Extra</th><th>Messages</th><th>Rating</th><th></th></tr>' + names.map(n => {
-    const rv = mean(convos.filter(v => v.contact === n && v.rating != null).map(v => v.rating)), p = profiles[n] || {}, x = Object.entries(p.extra || {}).map(([k, v]) => `${esc(k)}: ${esc(v)}`).join(', ');
-    return `<tr><td>${esc(n)}</td><td>${esc(p.display_name || '–')}</td><td>${esc(p.username || '–')}</td><td>${p.age ?? '–'}</td><td>${esc(p.gender || '–')}</td><td>${esc(p.pronouns || '–')}</td><td>${esc(p.sexuality || '–')}</td><td style="white-space:normal">${x || '–'}</td><td>${rows.filter(r => r.contact === n).length}</td><td>${rv == null ? '–' : n1(rv) + ' ' + grade(rv)}</td><td><button class="btn alt" style="margin:0;padding:3px 10px" data-edit="${esc(n)}">Edit</button></td></tr>`;
+    const rv = mean(convos.filter(v => v.contact === n && v.score != null).map(v => v.score)), p = profiles[n] || {}, x = Object.entries(p.extra || {}).map(([k, v]) => `${esc(k)}: ${esc(v)}`).join(', ');
+    return `<tr><td>${esc(n)}</td><td>${esc(p.display_name || '–')}</td><td>${esc(p.username || '–')}</td><td>${p.age ?? '–'}</td><td>${esc(p.gender || '–')}</td><td>${esc(p.pronouns || '–')}</td><td>${esc(p.sexuality || '–')}</td><td style="white-space:normal">${x || '–'}</td><td>${rows.filter(r => r.contact === n).length}</td><td>${rv == null ? '–' : grade(rv)}</td><td><button class="btn alt" style="margin:0;padding:3px 10px" data-edit="${esc(n)}">Edit</button></td></tr>`;
   }).join('');
 }
 $('people').onclick = e => {
