@@ -66,6 +66,7 @@ canvas{max-height:300px}
   <nav id="tabs">
     <button data-t="dash" class="on">Dashboard</button>
     <button data-t="add">Add messages</button>
+    <button data-t="people">People</button>
     <button data-t="data">Data</button>
   </nav>
 
@@ -74,6 +75,7 @@ canvas{max-height:300px}
     <div class="card">
       <div class="row">
         <div><label for="fc">Contact</label><select id="fc"></select></div>
+        <div><label for="fg">Filter by group</label><select id="fg"></select></div>
         <div><label for="cap">Treat gaps longer than (hours) as a new conversation</label><input id="cap" type="number" min="1" value="12"></div>
       </div>
       <div class="big" id="kpis" style="margin-top:14px"></div>
@@ -126,6 +128,27 @@ canvas{max-height:300px}
     <datalist id="contacts"></datalist>
   </div>
 
+  <!-- PEOPLE -->
+  <div id="t-people" class="hide">
+    <div class="card">
+      <h2>Add or edit a person</h2>
+      <p class="msg" style="margin-top:0">The name must match the contact name used on their messages. Saving an existing name updates it.</p>
+      <div class="row">
+        <div><label for="pf_name">Name</label><input id="pf_name" list="contacts"></div>
+        <div><label for="pf_age">Age</label><input id="pf_age" type="number" min="0" max="120"></div>
+        <div><label for="pf_gender">Gender</label><input id="pf_gender"></div>
+        <div><label for="pf_rel">Relationship</label><input id="pf_rel" placeholder="friend, family, coworker"></div>
+      </div>
+      <label for="pf_extra">Other details, one per line as key: value</label>
+      <textarea id="pf_extra" style="min-height:80px" placeholder="city: Leeds&#10;met: university"></textarea>
+      <label for="pf_notes">Notes</label><textarea id="pf_notes" style="min-height:60px"></textarea>
+      <button class="btn" id="pf_save">Save person</button>
+      <button class="btn alt" id="pf_del">Remove profile</button>
+      <div class="msg" id="pf_msg"></div>
+    </div>
+    <div class="card wrap"><h2>People</h2><table id="people"></table></div>
+  </div>
+
   <!-- DATA -->
   <div id="t-data" class="hide">
     <div class="card">
@@ -144,15 +167,15 @@ canvas{max-height:300px}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script>
 // ====== 1. Paste your Supabase project values here (Project Settings > API) ======
-const SUPABASE_URL = 'https://futliaqryknegamvxdqg.supabase.co';
-const SUPABASE_ANON_KEY = 'sb_publishable_ymPvs8C2C6Pv09tkrTIRXg_Fqcg_MeR';
+const SUPABASE_URL = 'YOUR_SUPABASE_URL';
+const SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY';
 // =================================================================================
 
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
-let rows = [], charts = {}, parsed = [];
+let rows = [], charts = {}, parsed = [], profiles = {};
 
 /* ---------- auth ---------- */
 async function boot() {
@@ -173,7 +196,7 @@ $('signout').onclick = () => sb.auth.signOut();
 $('tabs').onclick = e => {
   const t = e.target.dataset.t; if (!t) return;
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b === e.target));
-  ['dash','add','data'].forEach(k => $('t-' + k).classList.toggle('hide', k !== t));
+  ['dash','add','people','data'].forEach(k => $('t-' + k).classList.toggle('hide', k !== t));
 };
 
 /* ---------- data ---------- */
@@ -191,12 +214,15 @@ async function loadAll() {
 }
 async function refresh() {
   try { rows = await loadAll(); } catch (e) { $('verdict').textContent = e.message; return; }
+  const pr = await sb.from('chatup_contacts').select('*');
+  profiles = {}; (pr.data || []).forEach(p => profiles[p.name] = p);
   const contacts = [...new Set(rows.map(r => r.contact))].sort();
+  const allNames = [...new Set([...contacts, ...Object.keys(profiles)])].sort();
   const cur = $('fc').value;
   $('fc').innerHTML = '<option value="">All contacts</option>' + contacts.map(c => `<option>${esc(c)}</option>`).join('');
   if (contacts.includes(cur)) $('fc').value = cur;
-  $('contacts').innerHTML = contacts.map(c => `<option value="${esc(c)}">`).join('');
-  render(); renderRecent();
+  $('contacts').innerHTML = allNames.map(c => `<option value="${esc(c)}">`).join('');
+  buildGroups(); render(); renderRecent(); renderPeople();
 }
 
 /* ---------- stats ---------- */
@@ -235,7 +261,8 @@ function chart(id, cfg) { if (charts[id]) charts[id].destroy(); charts[id] = new
 function render() {
   const capH = +$('cap').value || 12, sel = $('fc').value;
   const by = {}; rows.forEach(r => (by[r.contact] ??= []).push(r));
-  const subset = sel ? by[sel] || [] : rows;
+  const g = $('fg').value, pass = c => { if (!g) return true; const p = profiles[c] || {}; return ((g[0] === 'g' ? p.gender : p.relationship) || '').toLowerCase() === g.slice(2).toLowerCase(); };
+  const subset = sel ? by[sel] || [] : rows.filter(r => pass(r.contact));
   const s = analyse(subset, capH);
   const me = css('--me'), them = css('--them'), mute = css('--mute'), line = css('--line');
   Chart.defaults.color = mute; Chart.defaults.borderColor = line; Chart.defaults.font.family = '"Bricolage Grotesque", system-ui, sans-serif';
@@ -264,19 +291,19 @@ function render() {
     { label: 'Them', data: [s.them.wTurn, s.them.wMsg], backgroundColor: them }] },
     options: { responsive: true, scales: { y: { beginAtZero: true } } } });
 
-  const names = Object.keys(by).sort(), all = names.map(c => ({ c, s: analyse(by[c], capH) }));
+  const names = Object.keys(by).filter(pass).sort(), all = names.map(c => ({ c, s: analyse(by[c], capH) }));
   const ratio = (a, b) => a != null && b ? Math.round(a / b * 100) / 100 : null;
   chart('c3', { type: 'bar', data: { labels: names, datasets: [
     { label: 'Reply time (you ÷ them)', data: all.map(x => ratio(x.s.me.resp, x.s.them.resp)), backgroundColor: me },
     { label: 'Words per turn (you ÷ them)', data: all.map(x => ratio(x.s.me.wTurn, x.s.them.wTurn)), backgroundColor: them }] },
     options: { responsive: true, scales: { y: { beginAtZero: true } } } });
 
-  $('tbl').innerHTML = '<tr><th>Contact</th><th>Messages</th><th>Median reply</th><th>Words / turn</th><th>Words / msg</th><th>Chars / msg</th><th>Status</th></tr>' +
+  $('tbl').innerHTML = '<tr><th>Contact</th><th>Age</th><th>Gender</th><th>Messages</th><th>Median reply</th><th>Words / turn</th><th>Words / msg</th><th>Chars / msg</th><th>Status</th></tr>' +
     all.map(({ c, s }) => { const [l, k] = status(s);
       const pair = (a, b) => `<span class="me">${a}</span> / <span class="them">${b}</span>`;
-      return `<tr><td>${esc(c)}</td><td>${pair(s.me.n, s.them.n)}</td><td>${pair(fmt(s.me.resp), fmt(s.them.resp))}</td><td>${pair(n1(s.me.wTurn), n1(s.them.wTurn))}</td><td>${pair(n1(s.me.wMsg), n1(s.them.wMsg))}</td><td>${pair(n1(s.me.cMsg), n1(s.them.cMsg))}</td><td><span class="tag ${k}">${l}</span></td></tr>`; }).join('');
+      const p = profiles[c] || {}; return `<tr><td>${esc(c)}</td><td>${p.age ?? '–'}</td><td>${esc(p.gender || '–')}</td><td>${pair(s.me.n, s.them.n)}</td><td>${pair(fmt(s.me.resp), fmt(s.them.resp))}</td><td>${pair(n1(s.me.wTurn), n1(s.them.wTurn))}</td><td>${pair(n1(s.me.wMsg), n1(s.them.wMsg))}</td><td>${pair(n1(s.me.cMsg), n1(s.them.cMsg))}</td><td><span class="tag ${k}">${l}</span></td></tr>`; }).join('');
 }
-$('fc').onchange = $('cap').onchange = render;
+$('fc').onchange = $('cap').onchange = $('fg').onchange = render;
 
 /* ---------- pasted chat parser ---------- */
 function setTime(d, t) {
@@ -370,6 +397,48 @@ $('recent').onclick = async e => {
   const id = e.target.dataset.del; if (!id) return;
   const { error } = await sb.from('chatup_messages').delete().eq('id', id);
   if (error) $('dmsg').textContent = error.message; else refresh();
+};
+
+/* ---------- people ---------- */
+function buildGroups() {
+  const cur = $('fg').value, seen = {}, opts = [];
+  Object.values(profiles).forEach(p => [['g', p.gender], ['r', p.relationship]].forEach(([k, v]) => {
+    if (v && !seen[k + v.toLowerCase()]) { seen[k + v.toLowerCase()] = 1; opts.push(`<option value="${k}:${esc(v)}">${k === 'g' ? 'Gender' : 'Relationship'}: ${esc(v)}</option>`); }
+  }));
+  $('fg').innerHTML = '<option value="">Everyone</option>' + opts.join('');
+  if ([...$('fg').options].some(o => o.value === cur)) $('fg').value = cur;
+}
+function renderPeople() {
+  const names = [...new Set([...rows.map(r => r.contact), ...Object.keys(profiles)])].sort();
+  $('people').innerHTML = '<tr><th>Name</th><th>Age</th><th>Gender</th><th>Relationship</th><th>Other</th><th>Messages</th><th></th></tr>' + names.map(n => {
+    const p = profiles[n] || {}, x = Object.entries(p.extra || {}).map(([k, v]) => `${esc(k)}: ${esc(v)}`).join(', ');
+    return `<tr><td>${esc(n)}</td><td>${p.age ?? '–'}</td><td>${esc(p.gender || '–')}</td><td>${esc(p.relationship || '–')}</td><td style="white-space:normal">${x || '–'}</td><td>${rows.filter(r => r.contact === n).length}</td><td><button class="btn alt" style="margin:0;padding:3px 10px" data-edit="${esc(n)}">Edit</button></td></tr>`;
+  }).join('');
+}
+$('people').onclick = e => {
+  const n = e.target.dataset.edit; if (n == null) return;
+  const p = profiles[n] || {};
+  $('pf_name').value = n; $('pf_age').value = p.age ?? ''; $('pf_gender').value = p.gender || ''; $('pf_rel').value = p.relationship || '';
+  $('pf_notes').value = p.notes || '';
+  $('pf_extra').value = Object.entries(p.extra || {}).map(([k, v]) => `${k}: ${v}`).join('\n');
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+};
+$('pf_save').onclick = async () => {
+  const name = $('pf_name').value.trim(); if (!name) { $('pf_msg').textContent = 'Enter a name.'; return; }
+  const extra = {};
+  $('pf_extra').value.split('\n').forEach(l => { const i = l.indexOf(':'); if (i > 0 && l.slice(i + 1).trim()) extra[l.slice(0, i).trim()] = l.slice(i + 1).trim(); });
+  const { data: { session } } = await sb.auth.getSession();
+  const age = $('pf_age').value;
+  const { error } = await sb.from('chatup_contacts').upsert({ user_id: session.user.id, name, age: age === '' ? null : +age,
+    gender: $('pf_gender').value.trim() || null, relationship: $('pf_rel').value.trim() || null, notes: $('pf_notes').value.trim() || null, extra },
+    { onConflict: 'user_id,name' });
+  if (error) { $('pf_msg').innerHTML = `<span class="err">${esc(error.message)}</span>`; return; }
+  $('pf_msg').textContent = 'Saved.'; ['pf_name','pf_age','pf_gender','pf_rel','pf_extra','pf_notes'].forEach(i => $(i).value = ''); refresh();
+};
+$('pf_del').onclick = async () => {
+  const name = $('pf_name').value.trim(); if (!name) { $('pf_msg').textContent = 'Enter the name to remove.'; return; }
+  const { error } = await sb.from('chatup_contacts').delete().eq('name', name);
+  $('pf_msg').textContent = error ? error.message : 'Profile removed. Their messages are kept.'; if (!error) refresh();
 };
 
 boot();
