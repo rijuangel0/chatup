@@ -88,6 +88,7 @@ canvas{max-height:300px}
     <div class="card"><h2>All contacts: you ÷ them</h2>
       <p class="msg" style="margin-top:0">Reply time ratio below 1 means you answer faster. Words ratio above 1 means your replies are longer.</p>
       <canvas id="c3"></canvas></div>
+    <div class="card"><h2>Conversation ratings over time</h2><canvas id="c4"></canvas></div>
     <div class="card wrap"><h2>Totals</h2><table id="tbl"></table></div>
   </div>
 
@@ -96,7 +97,8 @@ canvas{max-height:300px}
     <div class="card">
       <h2>Paste a chat</h2>
       <div class="row">
-        <div><label for="pc">Contact name (what you call them)</label><input id="pc" list="contacts" placeholder="e.g. Sam"></div>
+        <div><label for="pcs">Contact name (what you call them)</label><select id="pcs"></select><input id="pc" class="hide" placeholder="New contact name" style="margin-top:6px"></div>
+        <div><label for="prate">Conversation rating (0–10)</label><input id="prate" type="number" min="0" max="10" step="0.1" placeholder="e.g. 7.5"><div class="msg" id="pgrade" style="margin:4px 0 0;min-height:0"></div></div>
         <div><label for="pme">Your Discord display name (as shown in the chat)</label><input id="pme"></div>
         <div><label for="pdate">Date, if the paste only shows times</label><input id="pdate" type="date"></div>
         <div><label for="pord">Date order in pasted text</label>
@@ -110,23 +112,7 @@ canvas{max-height:300px}
       <div class="msg" id="pmsg"></div>
       <div class="wrap"><table id="ptbl"></table></div>
     </div>
-    <div class="card">
-      <h2>Add one message</h2>
-      <div class="row">
-        <div><label for="mc">Contact name</label><input id="mc" list="contacts"></div>
-        <div><label for="ms">Sent by</label><select id="ms"><option value="me">Me</option><option value="them">Them</option></select></div>
-        <div><label for="mt">Date and time</label><input id="mt" type="datetime-local"></div>
-      </div>
-      <label for="mx">Message text (optional, fills in the counts)</label><textarea id="mx" style="min-height:70px"></textarea>
-      <div class="row">
-        <div><label for="mch">Characters</label><input id="mch" type="number" min="0"></div>
-        <div><label for="mw">Words</label><input id="mw" type="number" min="0"></div>
-      </div>
-      <label><input type="checkbox" id="mkeep" style="width:auto"> Also store the message text</label>
-      <button class="btn" id="msave">Save message</button>
-      <div class="msg" id="mmsg"></div>
-    </div>
-    <datalist id="contacts"></datalist>
+        <datalist id="contacts"></datalist>
   </div>
 
   <!-- PEOPLE -->
@@ -165,6 +151,7 @@ canvas{max-height:300px}
       <label for="imp">Import CSV</label><input id="imp" type="file" accept=".csv">
       <div class="msg" id="dmsg"></div>
     </div>
+    <div class="card wrap"><h2>Conversations</h2><table id="convos"></table></div>
     <div class="card wrap"><h2>Latest 100 messages</h2><table id="recent"></table></div>
   </div>
 </section>
@@ -182,7 +169,8 @@ const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
-let rows = [], charts = {}, parsed = [], profiles = {};
+let rows = [], charts = {}, parsed = [], profiles = {}, convos = [];
+const grade = r => r == null ? '–' : r < 3 ? 'F' : r < 5 ? 'D' : r < 7 ? 'C' : r < 8.5 ? 'B' : r < 9.5 ? 'A' : 'A+';
 
 /* ---------- auth ---------- */
 async function boot() {
@@ -223,13 +211,23 @@ async function refresh() {
   try { rows = await loadAll(); } catch (e) { $('verdict').textContent = e.message; return; }
   const pr = await sb.from('chatup_contacts').select('*');
   profiles = {}; (pr.data || []).forEach(p => profiles[p.contact_name] = p);
+  const cv = await sb.from('chatup_conversations').select('*').order('started_at', { ascending: false });
+  convos = cv.data || [];
   const contacts = [...new Set(rows.map(r => r.contact))].sort();
-  const allNames = [...new Set([...contacts, ...Object.keys(profiles)])].sort();
+  const last = {}, bump = (c, t) => { if (!(last[c] >= t)) last[c] = t; };
+  rows.forEach(r => bump(r.contact, new Date(r.sent_at).getTime()));
+  convos.forEach(v => bump(v.contact, new Date(v.created_at).getTime()));
+  Object.values(profiles).forEach(p => bump(p.contact_name, new Date(p.created_at).getTime()));
+  const allNames = Object.keys(last).sort((a, b) => last[b] - last[a]); // most recently added or messaged first
   const cur = $('fc').value;
   $('fc').innerHTML = '<option value="">All contacts</option>' + contacts.map(c => `<option>${esc(c)}</option>`).join('');
   if (contacts.includes(cur)) $('fc').value = cur;
   $('contacts').innerHTML = allNames.map(c => `<option value="${esc(c)}">`).join('');
-  buildGroups(); render(); renderRecent(); renderPeople();
+  const sv = $('pcs').value;
+  $('pcs').innerHTML = '<option value="">Choose contact…</option>' + allNames.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('') + '<option value="__new">New contact…</option>';
+  if ([...$('pcs').options].some(o => o.value === sv)) $('pcs').value = sv;
+  $('pc').classList.toggle('hide', $('pcs').value !== '__new');
+  buildGroups(); render(); renderRecent(); renderPeople(); renderConvos();
 }
 
 /* ---------- stats ---------- */
@@ -271,6 +269,7 @@ function render() {
   const g = $('fg').value, pass = c => { if (!g) return true; const p = profiles[c] || {}; return ((p[GF[g[0]][0]]) || '').toLowerCase() === g.slice(2).toLowerCase(); };
   const subset = sel ? by[sel] || [] : rows.filter(r => pass(r.contact));
   const s = analyse(subset, capH);
+  const rc = convos.filter(v => v.rating != null && (sel ? v.contact === sel : pass(v.contact)));
   const me = css('--me'), them = css('--them'), mute = css('--mute'), line = css('--line');
   Chart.defaults.color = mute; Chart.defaults.borderColor = line; Chart.defaults.font.family = '"Bricolage Grotesque", system-ui, sans-serif';
 
@@ -280,7 +279,7 @@ function render() {
     ['Words per message', n1(s.me.wMsg), n1(s.them.wMsg)],
     ['Characters per message', n1(s.me.cMsg), n1(s.them.cMsg)],
     ['Messages', s.me.n, s.them.n]
-  ].map(k => `<div><span>${k[0]}</span><b><span class="me" style="font-size:inherit">${k[1]}</span> <span style="font-size:1rem;font-weight:400">vs</span> <span class="them" style="font-size:inherit">${k[2]}</span></b></div>`).join('');
+  ].map(k => `<div><span>${k[0]}</span><b><span class="me" style="font-size:inherit">${k[1]}</span> <span style="font-size:1rem;font-weight:400">vs</span> <span class="them" style="font-size:inherit">${k[2]}</span></b></div>`).join('') + `<div><span>Average rating</span><b>${rc.length ? n1(mean(rc.map(v => v.rating))) + ' <span style="font-size:1rem">' + grade(mean(rc.map(v => v.rating))) + '</span>' : '–'}</b></div>`;
   const [label, cls] = status(s);
   $('verdict').innerHTML = rows.length ? `<span class="tag ${cls}">${label}</span> <span class="me">You</span> vs <span class="them">them</span>` : 'No messages yet. Add some in the Add messages tab.';
 
@@ -305,10 +304,14 @@ function render() {
     { label: 'Words per turn (you ÷ them)', data: all.map(x => ratio(x.s.me.wTurn, x.s.them.wTurn)), backgroundColor: them }] },
     options: { responsive: true, scales: { y: { beginAtZero: true } } } });
 
-  $('tbl').innerHTML = '<tr><th>Contact</th><th>Age</th><th>Gender</th><th>Messages</th><th>Median reply</th><th>Words / turn</th><th>Words / msg</th><th>Chars / msg</th><th>Status</th></tr>' +
+  const rs = [...rc].sort((a, b) => new Date(a.started_at) - new Date(b.started_at));
+  chart('c4', { type: 'line', data: { labels: rs.map(v => new Date(v.started_at).toLocaleDateString('en-CA') + (sel ? '' : ' ' + v.contact)),
+    datasets: [{ label: 'Rating', data: rs.map(v => v.rating), borderColor: me, backgroundColor: me, tension: .25 }] },
+    options: { responsive: true, scales: { y: { min: 0, max: 10 } } } });
+  $('tbl').innerHTML = '<tr><th>Contact</th><th>Age</th><th>Gender</th><th>Messages</th><th>Median reply</th><th>Words / turn</th><th>Words / msg</th><th>Chars / msg</th><th>Rating</th><th>Status</th></tr>' +
     all.map(({ c, s }) => { const [l, k] = status(s);
       const pair = (a, b) => `<span class="me">${a}</span> / <span class="them">${b}</span>`;
-      const p = profiles[c] || {}; return `<tr><td>${esc(c)}</td><td>${p.age ?? '–'}</td><td>${esc(p.gender || '–')}</td><td>${pair(s.me.n, s.them.n)}</td><td>${pair(fmt(s.me.resp), fmt(s.them.resp))}</td><td>${pair(n1(s.me.wTurn), n1(s.them.wTurn))}</td><td>${pair(n1(s.me.wMsg), n1(s.them.wMsg))}</td><td>${pair(n1(s.me.cMsg), n1(s.them.cMsg))}</td><td><span class="tag ${k}">${l}</span></td></tr>`; }).join('');
+      const p = profiles[c] || {}, rv = mean(convos.filter(v => v.contact === c && v.rating != null).map(v => v.rating)); return `<tr><td>${esc(c)}</td><td>${p.age ?? '–'}</td><td>${esc(p.gender || '–')}</td><td>${pair(s.me.n, s.them.n)}</td><td>${pair(fmt(s.me.resp), fmt(s.them.resp))}</td><td>${pair(n1(s.me.wTurn), n1(s.them.wTurn))}</td><td>${pair(n1(s.me.wMsg), n1(s.them.wMsg))}</td><td>${pair(n1(s.me.cMsg), n1(s.them.cMsg))}</td><td>${rv == null ? '–' : n1(rv) + ' ' + grade(rv)}</td><td><span class="tag ${k}">${l}</span></td></tr>`; }).join('');
 }
 $('fc').onchange = $('cap').onchange = $('fg').onchange = render;
 
@@ -355,15 +358,15 @@ $('pme').value = localStorage.getItem('chatup_me') || '';
 { const t = new Date(); $('pdate').value = t.getFullYear() + '-' + String(t.getMonth() + 1).padStart(2, '0') + '-' + String(t.getDate()).padStart(2, '0'); }
 
 $('pparse').onclick = () => {
-  const me = $('pme').value.trim(); let c = $('pc').value.trim();
+  const me = $('pme').value.trim(); let c = $('pcs').value === '__new' ? $('pc').value.trim() : $('pcs').value;
   if (!me) { $('pmsg').textContent = 'Enter your Discord display name first.'; return; }
   localStorage.setItem('chatup_me', me);
   const msgs = parseChat($('ptxt').value, me, $('pord').value, (() => { const [y, m, d] = ($('pdate').value || '').split('-').map(Number); return y ? new Date(y, m - 1, d) : new Date(); })());
   if (!c) { // try to find the contact from the display name shown in the chat
     const hit = Object.values(profiles).find(p => p.display_name && msgs.some(m => m.sender === 'them' && norm(m.author) === norm(p.display_name)));
-    if (hit) { c = hit.contact_name; $('pc').value = c; }
+    if (hit) { c = hit.contact_name; $('pcs').value = c; $('pc').classList.add('hide'); }
   }
-  if (!c) { $('pmsg').textContent = 'Enter the contact name: the label you use for this person in ChatUp.'; return; }
+  if (!c) { $('pmsg').textContent = 'Choose a contact, or pick "New contact…" and type the name you call them.'; return; }
   const keep = $('pkeep').checked;
   parsed = msgs.map(m => ({ contact: c, sender: m.sender, sent_at: m.date.toISOString(), char_count: m.text.length, word_count: countW(m.text), content: keep ? m.text : null }));
   $('pmsg').textContent = parsed.length ? `${parsed.length} messages found (${parsed.filter(p => p.sender === 'me').length} from you) for ${c}. Check the list, then save.` : 'No messages found. Each message needs a header like "Name — 27/10/2026 15:45".';
@@ -377,22 +380,40 @@ async function insertRows(list) {
     if (error) throw error;
   }
 }
+$('pcs').onchange = () => $('pc').classList.toggle('hide', $('pcs').value !== '__new');
+$('prate').oninput = () => { const v = $('prate').value; $('pgrade').textContent = v === '' ? '' : 'Grade: ' + grade(Math.min(10, Math.max(0, +v))); };
 $('psave').onclick = async () => {
-  $('psave').disabled = true;
-  try { await insertRows(parsed); $('pmsg').textContent = `Saved ${parsed.length} messages.`; parsed = []; $('ptbl').innerHTML = ''; $('ptxt').value = ''; refresh(); }
-  catch (e) { $('pmsg').innerHTML = `<span class="err">${esc(e.message)}</span>`; $('psave').disabled = false; }
+  $('psave').disabled = true; let cvId = null;
+  try {
+    const rt = $('prate').value, ts = parsed.map(p => new Date(p.sent_at).getTime());
+    const { data: cv, error: ce } = await sb.from('chatup_conversations').insert({ contact: parsed[0].contact,
+      started_at: new Date(Math.min(...ts)).toISOString(), ended_at: new Date(Math.max(...ts)).toISOString(), message_count: parsed.length,
+      rating: rt === '' ? null : Math.min(10, Math.max(0, +rt)) }).select('id').single();
+    if (ce) throw ce;
+    cvId = cv.id;
+    await insertRows(parsed.map(p => ({ ...p, conversation_id: cvId })));
+    $('pmsg').textContent = `Saved ${parsed.length} messages${rt === '' ? '' : ' with a rating of ' + (+rt) + ' (' + grade(+rt) + ')'}.`;
+    parsed = []; $('ptbl').innerHTML = ''; $('ptxt').value = ''; $('prate').value = ''; $('pgrade').textContent = ''; refresh();
+  } catch (e) {
+    if (cvId) await sb.from('chatup_conversations').delete().eq('id', cvId);
+    $('pmsg').innerHTML = `<span class="err">${esc(e.message)}</span>`; $('psave').disabled = false;
+  }
 };
 
-/* ---------- manual entry ---------- */
-$('mx').oninput = () => { $('mch').value = $('mx').value.length; $('mw').value = countW($('mx').value); };
-$('msave').onclick = async () => {
-  const c = $('mc').value.trim(), t = $('mt').value;
-  if (!c || !t || $('mch').value === '' || $('mw').value === '') { $('mmsg').textContent = 'Contact, time, characters and words are required.'; return; }
-  try {
-    await insertRows([{ contact: c, sender: $('ms').value, sent_at: new Date(t).toISOString(), char_count: +$('mch').value, word_count: +$('mw').value,
-      content: $('mkeep').checked && $('mx').value ? $('mx').value : null }]);
-    $('mmsg').textContent = 'Saved.'; $('mx').value = $('mch').value = $('mw').value = ''; refresh();
-  } catch (e) { $('mmsg').innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+/* ---------- conversations ---------- */
+function renderConvos() {
+  const body = convos.map(v => `<tr><td>${new Date(v.started_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}</td><td>${esc(v.contact)}</td><td>${v.message_count}</td><td><input type="number" min="0" max="10" step="0.1" value="${v.rating ?? ''}" data-rate="${v.id}" style="width:90px"></td><td>${grade(v.rating)}</td><td><button class="btn alt" style="margin:0;padding:3px 10px" data-cdel="${v.id}">Delete</button></td></tr>`).join('');
+  $('convos').innerHTML = '<tr><th>Started</th><th>Contact</th><th>Messages</th><th>Rating (0–10)</th><th>Grade</th><th></th></tr>' + (body || '<tr><td colspan="6">No conversations yet. Save a pasted chat to add one.</td></tr>');
+}
+$('convos').onchange = async e => {
+  const id = e.target.dataset.rate; if (!id) return; const v = e.target.value;
+  const { error } = await sb.from('chatup_conversations').update({ rating: v === '' ? null : Math.min(10, Math.max(0, +v)) }).eq('id', id);
+  if (error) $('dmsg').textContent = error.message; else refresh();
+};
+$('convos').onclick = async e => {
+  const id = e.target.dataset.cdel; if (!id || !confirm('Delete this conversation and its messages?')) return;
+  const { error } = await sb.from('chatup_conversations').delete().eq('id', id);
+  if (error) $('dmsg').textContent = error.message; else refresh();
 };
 
 /* ---------- CSV + recent ---------- */
@@ -442,9 +463,9 @@ function addRow(k = '', v = '') {
 $('pf_add').onclick = () => addRow();
 function renderPeople() {
   const names = [...new Set([...rows.map(r => r.contact), ...Object.keys(profiles)])].sort();
-  $('people').innerHTML = '<tr><th>Contact name</th><th>Display name</th><th>Username</th><th>Age</th><th>Gender</th><th>Pronouns</th><th>Sexuality</th><th>Extra</th><th>Messages</th><th></th></tr>' + names.map(n => {
-    const p = profiles[n] || {}, x = Object.entries(p.extra || {}).map(([k, v]) => `${esc(k)}: ${esc(v)}`).join(', ');
-    return `<tr><td>${esc(n)}</td><td>${esc(p.display_name || '–')}</td><td>${esc(p.username || '–')}</td><td>${p.age ?? '–'}</td><td>${esc(p.gender || '–')}</td><td>${esc(p.pronouns || '–')}</td><td>${esc(p.sexuality || '–')}</td><td style="white-space:normal">${x || '–'}</td><td>${rows.filter(r => r.contact === n).length}</td><td><button class="btn alt" style="margin:0;padding:3px 10px" data-edit="${esc(n)}">Edit</button></td></tr>`;
+  $('people').innerHTML = '<tr><th>Contact name</th><th>Display name</th><th>Username</th><th>Age</th><th>Gender</th><th>Pronouns</th><th>Sexuality</th><th>Extra</th><th>Messages</th><th>Rating</th><th></th></tr>' + names.map(n => {
+    const rv = mean(convos.filter(v => v.contact === n && v.rating != null).map(v => v.rating)), p = profiles[n] || {}, x = Object.entries(p.extra || {}).map(([k, v]) => `${esc(k)}: ${esc(v)}`).join(', ');
+    return `<tr><td>${esc(n)}</td><td>${esc(p.display_name || '–')}</td><td>${esc(p.username || '–')}</td><td>${p.age ?? '–'}</td><td>${esc(p.gender || '–')}</td><td>${esc(p.pronouns || '–')}</td><td>${esc(p.sexuality || '–')}</td><td style="white-space:normal">${x || '–'}</td><td>${rows.filter(r => r.contact === n).length}</td><td>${rv == null ? '–' : n1(rv) + ' ' + grade(rv)}</td><td><button class="btn alt" style="margin:0;padding:3px 10px" data-edit="${esc(n)}">Edit</button></td></tr>`;
   }).join('');
 }
 $('people').onclick = e => {
