@@ -96,8 +96,8 @@ canvas{max-height:300px}
     <div class="card">
       <h2>Paste a chat</h2>
       <div class="row">
-        <div><label for="pc">Contact</label><input id="pc" list="contacts" placeholder="e.g. Sam"></div>
-        <div><label for="pme">Your Discord display name</label><input id="pme"></div>
+        <div><label for="pc">Contact name (what you call them)</label><input id="pc" list="contacts" placeholder="e.g. Sam"></div>
+        <div><label for="pme">Your Discord display name (as shown in the chat)</label><input id="pme"></div>
         <div><label for="pord">Date order in pasted text</label>
           <select id="pord"><option value="dmy">Day/Month (UK)</option><option value="mdy">Month/Day (US)</option></select></div>
       </div>
@@ -112,7 +112,7 @@ canvas{max-height:300px}
     <div class="card">
       <h2>Add one message</h2>
       <div class="row">
-        <div><label for="mc">Contact</label><input id="mc" list="contacts"></div>
+        <div><label for="mc">Contact name</label><input id="mc" list="contacts"></div>
         <div><label for="ms">Sent by</label><select id="ms"><option value="me">Me</option><option value="them">Them</option></select></div>
         <div><label for="mt">Date and time</label><input id="mt" type="datetime-local"></div>
       </div>
@@ -132,10 +132,11 @@ canvas{max-height:300px}
   <div id="t-people" class="hide">
     <div class="card">
       <h2>Add or edit a person</h2>
-      <p class="msg" style="margin-top:0">The username must match the contact name used on their messages. Saving an existing username updates it.</p>
+      <p class="msg" style="margin-top:0">The contact name must match the one used on their messages. Saving an existing contact name updates it.</p>
       <div class="row">
-        <div><label for="pf_user">Username</label><input id="pf_user" list="contacts"></div>
-        <div><label for="pf_disp">Display name</label><input id="pf_disp"></div>
+        <div><label for="pf_contact">Contact name</label><input id="pf_contact" list="contacts"></div>
+        <div><label for="pf_disp">Display name (shown on Discord)</label><input id="pf_disp"></div>
+        <div><label for="pf_user">Username (Discord ID)</label><input id="pf_user"></div>
         <div><label for="pf_age">Age</label><input id="pf_age" type="number" min="0" max="120"></div>
       </div>
       <div class="row">
@@ -220,11 +221,11 @@ async function loadAll() {
 async function refresh() {
   try { rows = await loadAll(); } catch (e) { $('verdict').textContent = e.message; return; }
   const pr = await sb.from('chatup_contacts').select('*');
-  profiles = {}; (pr.data || []).forEach(p => profiles[p.username] = p);
+  profiles = {}; (pr.data || []).forEach(p => profiles[p.contact_name] = p);
   const contacts = [...new Set(rows.map(r => r.contact))].sort();
   const allNames = [...new Set([...contacts, ...Object.keys(profiles)])].sort();
   const cur = $('fc').value;
-  $('fc').innerHTML = '<option value="">All contacts</option>' + contacts.map(c => { const d = (profiles[c] || {}).display_name; return `<option value="${esc(c)}">${esc(d && d !== c ? d + ' (' + c + ')' : c)}</option>`; }).join('');
+  $('fc').innerHTML = '<option value="">All contacts</option>' + contacts.map(c => `<option>${esc(c)}</option>`).join('');
   if (contacts.includes(cur)) $('fc').value = cur;
   $('contacts').innerHTML = allNames.map(c => `<option value="${esc(c)}">`).join('');
   buildGroups(); render(); renderRecent(); renderPeople();
@@ -298,7 +299,7 @@ function render() {
 
   const names = Object.keys(by).filter(pass).sort(), all = names.map(c => ({ c, s: analyse(by[c], capH) }));
   const ratio = (a, b) => a != null && b ? Math.round(a / b * 100) / 100 : null;
-  chart('c3', { type: 'bar', data: { labels: names.map(n => (profiles[n] || {}).display_name || n), datasets: [
+  chart('c3', { type: 'bar', data: { labels: names, datasets: [
     { label: 'Reply time (you ÷ them)', data: all.map(x => ratio(x.s.me.resp, x.s.them.resp)), backgroundColor: me },
     { label: 'Words per turn (you ÷ them)', data: all.map(x => ratio(x.s.me.wTurn, x.s.them.wTurn)), backgroundColor: them }] },
     options: { responsive: true, scales: { y: { beginAtZero: true } } } });
@@ -306,7 +307,7 @@ function render() {
   $('tbl').innerHTML = '<tr><th>Contact</th><th>Age</th><th>Gender</th><th>Messages</th><th>Median reply</th><th>Words / turn</th><th>Words / msg</th><th>Chars / msg</th><th>Status</th></tr>' +
     all.map(({ c, s }) => { const [l, k] = status(s);
       const pair = (a, b) => `<span class="me">${a}</span> / <span class="them">${b}</span>`;
-      const p = profiles[c] || {}; return `<tr><td>${esc(p.display_name || c)}</td><td>${p.age ?? '–'}</td><td>${esc(p.gender || '–')}</td><td>${pair(s.me.n, s.them.n)}</td><td>${pair(fmt(s.me.resp), fmt(s.them.resp))}</td><td>${pair(n1(s.me.wTurn), n1(s.them.wTurn))}</td><td>${pair(n1(s.me.wMsg), n1(s.them.wMsg))}</td><td>${pair(n1(s.me.cMsg), n1(s.them.cMsg))}</td><td><span class="tag ${k}">${l}</span></td></tr>`; }).join('');
+      const p = profiles[c] || {}; return `<tr><td>${esc(c)}</td><td>${p.age ?? '–'}</td><td>${esc(p.gender || '–')}</td><td>${pair(s.me.n, s.them.n)}</td><td>${pair(fmt(s.me.resp), fmt(s.them.resp))}</td><td>${pair(n1(s.me.wTurn), n1(s.them.wTurn))}</td><td>${pair(n1(s.me.wMsg), n1(s.them.wMsg))}</td><td>${pair(n1(s.me.cMsg), n1(s.them.cMsg))}</td><td><span class="tag ${k}">${l}</span></td></tr>`; }).join('');
 }
 $('fc').onchange = $('cap').onchange = $('fg').onchange = render;
 
@@ -338,19 +339,24 @@ function parseChat(text, me, order) {
     if (c && cur) { const d = setTime(new Date(cur.date), c[1]); if (d) { cur = { author: cur.author, date: d, text: c[2] }; out.push(cur); continue; } }
     if (cur && line) cur.text += (cur.text ? '\n' : '') + line;
   }
-  return out.filter(m => m.text.trim()).map(m => ({ sender: norm(m.author) === norm(me) ? 'me' : 'them', date: m.date, text: m.text.trim() }));
+  return out.filter(m => m.text.trim()).map(m => ({ author: m.author, sender: norm(m.author) === norm(me) ? 'me' : 'them', date: m.date, text: m.text.trim() }));
 }
 const countW = t => t.trim().split(/\s+/).filter(Boolean).length;
 $('pme').value = localStorage.getItem('chatup_me') || '';
 
 $('pparse').onclick = () => {
-  const me = $('pme').value.trim(), c = $('pc').value.trim();
-  if (!c || !me) { $('pmsg').textContent = 'Enter the contact and your display name first.'; return; }
+  const me = $('pme').value.trim(); let c = $('pc').value.trim();
+  if (!me) { $('pmsg').textContent = 'Enter your Discord display name first.'; return; }
   localStorage.setItem('chatup_me', me);
+  const msgs = parseChat($('ptxt').value, me, $('pord').value);
+  if (!c) { // try to find the contact from the display name shown in the chat
+    const hit = Object.values(profiles).find(p => p.display_name && msgs.some(m => m.sender === 'them' && norm(m.author) === norm(p.display_name)));
+    if (hit) { c = hit.contact_name; $('pc').value = c; }
+  }
+  if (!c) { $('pmsg').textContent = 'Enter the contact name: the label you use for this person in ChatUp.'; return; }
   const keep = $('pkeep').checked;
-  parsed = parseChat($('ptxt').value, me, $('pord').value).map(m => ({
-    contact: c, sender: m.sender, sent_at: m.date.toISOString(), char_count: m.text.length, word_count: countW(m.text), content: keep ? m.text : null }));
-  $('pmsg').textContent = parsed.length ? `${parsed.length} messages found (${parsed.filter(p => p.sender === 'me').length} from you). Check the list, then save.` : 'No messages found. Each message needs a header like "Name — 27/10/2026 15:45".';
+  parsed = msgs.map(m => ({ contact: c, sender: m.sender, sent_at: m.date.toISOString(), char_count: m.text.length, word_count: countW(m.text), content: keep ? m.text : null }));
+  $('pmsg').textContent = parsed.length ? `${parsed.length} messages found (${parsed.filter(p => p.sender === 'me').length} from you) for ${c}. Check the list, then save.` : 'No messages found. Each message needs a header like "Name — 27/10/2026 15:45".';
   $('psave').disabled = !parsed.length;
   $('ptbl').innerHTML = '<tr><th>From</th><th>Time</th><th>Chars</th><th>Words</th></tr>' + parsed.slice(0, 200).map(p =>
     `<tr><td class="${p.sender}">${p.sender === 'me' ? 'You' : esc(p.contact)}</td><td>${new Date(p.sent_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}</td><td>${p.char_count}</td><td>${p.word_count}</td></tr>`).join('');
@@ -426,36 +432,36 @@ function addRow(k = '', v = '') {
 $('pf_add').onclick = () => addRow();
 function renderPeople() {
   const names = [...new Set([...rows.map(r => r.contact), ...Object.keys(profiles)])].sort();
-  $('people').innerHTML = '<tr><th>Username</th><th>Display name</th><th>Age</th><th>Gender</th><th>Pronouns</th><th>Sexuality</th><th>Extra</th><th>Messages</th><th></th></tr>' + names.map(n => {
+  $('people').innerHTML = '<tr><th>Contact name</th><th>Display name</th><th>Username</th><th>Age</th><th>Gender</th><th>Pronouns</th><th>Sexuality</th><th>Extra</th><th>Messages</th><th></th></tr>' + names.map(n => {
     const p = profiles[n] || {}, x = Object.entries(p.extra || {}).map(([k, v]) => `${esc(k)}: ${esc(v)}`).join(', ');
-    return `<tr><td>${esc(n)}</td><td>${esc(p.display_name || '–')}</td><td>${p.age ?? '–'}</td><td>${esc(p.gender || '–')}</td><td>${esc(p.pronouns || '–')}</td><td>${esc(p.sexuality || '–')}</td><td style="white-space:normal">${x || '–'}</td><td>${rows.filter(r => r.contact === n).length}</td><td><button class="btn alt" style="margin:0;padding:3px 10px" data-edit="${esc(n)}">Edit</button></td></tr>`;
+    return `<tr><td>${esc(n)}</td><td>${esc(p.display_name || '–')}</td><td>${esc(p.username || '–')}</td><td>${p.age ?? '–'}</td><td>${esc(p.gender || '–')}</td><td>${esc(p.pronouns || '–')}</td><td>${esc(p.sexuality || '–')}</td><td style="white-space:normal">${x || '–'}</td><td>${rows.filter(r => r.contact === n).length}</td><td><button class="btn alt" style="margin:0;padding:3px 10px" data-edit="${esc(n)}">Edit</button></td></tr>`;
   }).join('');
 }
 $('people').onclick = e => {
   const n = e.target.dataset.edit; if (n == null) return;
   const p = profiles[n] || {};
-  $('pf_user').value = n; $('pf_disp').value = p.display_name || ''; $('pf_age').value = p.age ?? '';
+  $('pf_contact').value = n; $('pf_user').value = p.username || ''; $('pf_disp').value = p.display_name || ''; $('pf_age').value = p.age ?? '';
   $('pf_gender').value = p.gender || ''; $('pf_pro').value = p.pronouns || ''; $('pf_sex').value = p.sexuality || '';
   $('pf_rows').innerHTML = ''; Object.entries(p.extra || {}).forEach(([k, v]) => addRow(k, v));
   window.scrollTo({ top: 0, behavior: 'smooth' });
 };
 $('pf_save').onclick = async () => {
-  const username = $('pf_user').value.trim(); if (!username) { $('pf_msg').textContent = 'Enter a username.'; return; }
+  const contact_name = $('pf_contact').value.trim(); if (!contact_name) { $('pf_msg').textContent = 'Enter a contact name.'; return; }
   const extra = {};
   document.querySelectorAll('#pf_rows .row').forEach(r => { const k = r.querySelector('.pk').value.trim(), v = r.querySelector('.pv').value.trim(); if (k && v) extra[k] = v; });
   const { data: { session } } = await sb.auth.getSession();
   const val = id => $(id).value.trim() || null, age = $('pf_age').value;
-  const { error } = await sb.from('chatup_contacts').upsert({ user_id: session.user.id, username, display_name: val('pf_disp'),
+  const { error } = await sb.from('chatup_contacts').upsert({ user_id: session.user.id, contact_name, username: val('pf_user'), display_name: val('pf_disp'),
     age: age === '' ? null : +age, gender: val('pf_gender'), pronouns: val('pf_pro'), sexuality: val('pf_sex'), extra },
-    { onConflict: 'user_id,username' });
+    { onConflict: 'user_id,contact_name' });
   if (error) { $('pf_msg').innerHTML = `<span class="err">${esc(error.message)}</span>`; return; }
   $('pf_msg').textContent = 'Saved.';
-  ['pf_user','pf_disp','pf_age','pf_gender','pf_pro','pf_sex'].forEach(i => $(i).value = ''); $('pf_rows').innerHTML = '';
+  ['pf_contact','pf_user','pf_disp','pf_age','pf_gender','pf_pro','pf_sex'].forEach(i => $(i).value = ''); $('pf_rows').innerHTML = '';
   refresh();
 };
 $('pf_del').onclick = async () => {
-  const username = $('pf_user').value.trim(); if (!username) { $('pf_msg').textContent = 'Enter the username to remove.'; return; }
-  const { error } = await sb.from('chatup_contacts').delete().eq('username', username);
+  const contact_name = $('pf_contact').value.trim(); if (!contact_name) { $('pf_msg').textContent = 'Enter the contact name to remove.'; return; }
+  const { error } = await sb.from('chatup_contacts').delete().eq('contact_name', contact_name);
   $('pf_msg').textContent = error ? error.message : 'Profile removed. Their messages are kept.'; if (!error) refresh();
 };
 
