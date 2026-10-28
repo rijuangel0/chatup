@@ -330,6 +330,9 @@ function parseDate(s, order) {
 // Ignores case, leading bullets (* - •) and square brackets when matching names.
 const norm = n => n.toLowerCase().replace(/^[\s*\-•·]+/, '').replace(/[\[\]]/g, '').replace(/\s+/g, ' ').trim();
 function parseChat(text, me, order) {
+  // Discord's web copy puts name, dash and time on separate lines; join them into one header line.
+  text = text.replace(/[ \t]*\r?\n[ \t]*([—–])[ \t]*\r?\n[ \t]*/g, ' $1 ')
+             .replace(/[ \t]*\r?\n[ \t]*([—–])[ \t]+(?=today|yesterday|\d{1,4}[\/.\-]\d)/gi, ' $1 ');
   const out = []; let cur = null;
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.replace(/\s+$/, '');
